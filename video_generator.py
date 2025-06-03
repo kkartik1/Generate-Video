@@ -7,6 +7,7 @@ from pathlib import Path
 import base64
 from io import BytesIO
 import json
+import time
 
 # Document processing imports
 try:
@@ -204,16 +205,57 @@ class TextExpander:
         
         return '. '.join(expanded_parts) + '.'
 
+class ProgressTracker:
+    """Track and display progress for video generation"""
+    
+    def __init__(self, total_steps: int):
+        self.total_steps = max(1, total_steps)  # Ensure total_steps is at least 1
+        self.current_step = 0
+        self.progress_bar = st.progress(0)
+        self.status_text = st.empty()
+        self.detail_text = st.empty()
+        
+    def update(self, step_name: str, detail: str = ""):
+        """Update progress bar and status"""
+        self.current_step += 1
+        # Ensure progress never exceeds 1.0
+        progress = min(self.current_step / self.total_steps, 1.0)
+        self.progress_bar.progress(progress)
+        self.status_text.text(f"Step {min(self.current_step, self.total_steps)}/{self.total_steps}: {step_name}")
+        if detail:
+            self.detail_text.text(detail)
+        
+    def set_progress(self, progress_value: float, step_name: str, detail: str = ""):
+        """Set progress directly with a value between 0.0 and 1.0"""
+        # Ensure progress is within valid bounds
+        progress = max(0.0, min(progress_value, 1.0))
+        self.progress_bar.progress(progress)
+        self.status_text.text(step_name)
+        if detail:
+            self.detail_text.text(detail)
+        
+    def complete(self):
+        """Mark as complete"""
+        self.progress_bar.progress(1.0)
+        self.status_text.text("✅ Video generation complete!")
+        self.detail_text.text("")
+
 class VideoGenerator:
     """Generate video from matched content"""
     
     def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+        self.progress_tracker = None
+    
+    def set_progress_tracker(self, tracker: ProgressTracker):
+        """Set progress tracker for this generator"""
+        self.progress_tracker = tracker
     
     def create_text_clip(self, text: str, duration: float, size: Tuple[int, int] = (1920, 1080)) -> TextClip:
-        """Create animated text clip with word-by-word reveal"""
-        words = text.split()
+        """Create text clip with improved styling"""
+        if self.progress_tracker:
+            self.progress_tracker.update("Creating text overlay", f"Processing: {text[:50]}...")
         
         # Create base text clip with better visibility - MoviePy 2.2.1 compatible
         try:
@@ -224,15 +266,15 @@ class VideoGenerator:
             for font in fonts_to_try:
                 try:
                     txt_clip = TextClip(
-                        text=text,  # Use 'txt' parameter explicitly
-                        font_size=60,  # Changed from 'fontsize' to 'font_size'
+                        text=text,
+                        font_size=60,
                         color='white', 
                         font=font,
                         stroke_color='black',
                         stroke_width=2,
                         method='caption',
                         size=(1600, 400)
-                    ).with_duration(duration)  # Use with_duration for 2.2.1
+                    ).with_duration(duration)
                     font_used = font
                     break
                 except:
@@ -241,27 +283,31 @@ class VideoGenerator:
             # If no specific font works, use default
             if font_used is None:
                 txt_clip = TextClip(
-                    text=text,  # Use 'txt' parameter explicitly
-                    font_size=60,  # Changed from 'fontsize' to 'font_size'
+                    text=text,
+                    font_size=60,
                     color='white',
                     stroke_color='black',
                     stroke_width=2,
                     method='caption',
                     size=(1600, 400)
-                ).with_duration(duration)  # Use with_duration for 2.2.1
+                ).with_duration(duration)
                 
         except Exception as e:
             # Fallback to simplest TextClip creation
             txt_clip = TextClip(
-                text=text,  # Use 'txt' parameter explicitly
-                font_size=50,  # Changed from 'fontsize' to 'font_size'
+                text=text,
+                font_size=50,
                 color='white'
-            ).with_duration(duration)  # Use with_duration for 2.2.1
+            ).with_duration(duration)
         
         return txt_clip
     
-    def create_image_clip(self, image: Image.Image, duration: float, size: Tuple[int, int] = (1920, 1080)) -> ImageClip:
-        """Create full-screen image clip with animations"""
+    def create_image_clip_with_animation(self, image: Image.Image, duration: float, 
+                                       animation_type: str = "zoom", size: Tuple[int, int] = (1920, 1080)) -> ImageClip:
+        """Create image clip with animation effects using resize transforms"""
+        if self.progress_tracker:
+            self.progress_tracker.update("Adding image animation", f"Animation: {animation_type}")
+        
         # Save image temporarily
         temp_path = self.output_dir / f"temp_img_{id(image)}.png"
         
@@ -298,20 +344,62 @@ class VideoGenerator:
         
         full_img.save(temp_path)
         
-        # Create image clip - MoviePy 2.2.1 compatible
+        # Create base image clip
         img_clip = ImageClip(str(temp_path)).with_duration(duration)
         
+        # Apply animation using resize transform (compatible with MoviePy 2.2.1)
+        try:
+            if animation_type == "zoom":
+                # Zoom in effect using resize
+                def make_frame(t):
+                    # Progressive zoom from 100% to 120% over duration
+                    scale = 1.0 + (0.2 * t / duration)
+                    return img_clip.get_frame(t)
+                
+                # Apply gradual zoom by changing the clip size over time
+                zoom_clip = img_clip.resized(lambda t: 1.0 + (0.2 * t / duration))
+                return zoom_clip
+                
+            elif animation_type == "pan":
+                # Pan effect using position changes
+                def pos_func(t):
+                    # Pan from left to center over duration
+                    x_offset = int(50 * (1 - t / duration))  # Start 50px left, end at center
+                    return ('center', 'center')
+                
+                pan_clip = img_clip.with_position(pos_func)
+                return pan_clip
+                
+            elif animation_type == "fade":
+                # Simple fade in effect
+                if hasattr(img_clip, 'fadein'):
+                    fade_clip = img_clip.fadein(duration * 0.3)  # Fade in over first 30%
+                    return fade_clip
+                else:
+                    return img_clip
+                    
+        except Exception as e:
+            # If animation fails, return basic clip
+            st.warning(f"Animation failed, using static image: {str(e)}")
+            
         return img_clip
     
     def generate_voiceover(self, text: str, lang: str = 'en') -> str:
         """Generate voiceover using TTS"""
+        if self.progress_tracker:
+            self.progress_tracker.update("Generating voiceover", f"Language: {lang}")
+        
         tts = gTTS(text=text, lang=lang, slow=False)
         audio_path = self.output_dir / f"voiceover_{hash(text)}.mp3"
         tts.save(str(audio_path))
         return str(audio_path)
     
-    def create_frame_clip(self, images: List[Image.Image], text: str, expand_text: bool = True) -> CompositeVideoClip:
+    def create_frame_clip(self, images: List[Image.Image], text: str, expand_text: bool = True, 
+                         animation_type: str = "zoom") -> CompositeVideoClip:
         """Create a single frame combining images, text, and audio"""
+        if self.progress_tracker:
+            self.progress_tracker.update("Creating video frame", f"Images: {len(images)}")
+        
         if expand_text:
             text = TextExpander.expand_text(text)
         
@@ -322,22 +410,22 @@ class VideoGenerator:
         
         clips = []
         
-        # Add images as full-screen background
+        # Add images as full-screen background with animation
         if images:
-            # Use first image as main background
-            main_img_clip = self.create_image_clip(images[0], duration)
+            # Use first image as main background with animation
+            main_img_clip = self.create_image_clip_with_animation(images[0], duration, animation_type)
             clips.append(main_img_clip)
             
             # If multiple images, create a slideshow effect within the frame
             if len(images) > 1:
                 img_duration = duration / len(images)
-                for i, img in enumerate(images):
-                    img_clip = self.create_image_clip(img, img_duration)
-                    img_clip = img_clip.with_start(i * img_duration)  # Use with_start for 2.2.1
+                for i, img in enumerate(images[1:], 1):  # Skip first image (already used)
+                    img_clip = self.create_image_clip_with_animation(img, img_duration, animation_type)
+                    img_clip = img_clip.with_start(i * img_duration)
                     clips.append(img_clip)
         else:
-            # Create dark background if no images
-            bg_clip = ColorClip(size=(1920, 1080), color=(20, 20, 20)).with_duration(duration)
+            # Create animated dark background if no images
+            bg_clip = ColorClip(size=(1920, 1080), color=(20, 20, 40)).with_duration(duration)
             clips.append(bg_clip)
         
         # Add semi-transparent overlay for better text visibility
@@ -347,50 +435,67 @@ class VideoGenerator:
         
         # Add text at bottom with better positioning
         text_clip = self.create_text_clip(text, duration)
-        text_clip = text_clip.with_position(('center', 900))  # Use with_position for 2.2.1
+        text_clip = text_clip.with_position(('center', 900))
         clips.append(text_clip)
         
         # Compose final clip
         final_clip = CompositeVideoClip(clips)
-        final_clip = final_clip.with_audio(audio_clip)  # Use with_audio for 2.2.1
+        final_clip = final_clip.with_audio(audio_clip)
         
         return final_clip
     
-    def add_transition_effects(self, clips: List[CompositeVideoClip]) -> List[CompositeVideoClip]:
-        """Add transition effects between clips - MoviePy 2.2.1 compatible"""
+    def add_cross_dissolve_transitions(self, clips: List[CompositeVideoClip], transition_duration: float = 1.0) -> CompositeVideoClip:
+        """Add cross-dissolve transitions between clips using overlap"""
         if len(clips) <= 1:
-            return clips
+            return clips[0] if clips else None
         
-        # Simple transition effects that work with MoviePy 2.2.1
-        final_clips = []
+        if self.progress_tracker:
+            self.progress_tracker.update("Adding transitions", f"Transition duration: {transition_duration}s")
         
-        for i, clip in enumerate(clips):
-            try:
+        try:
+            # Calculate total duration and positions for overlapping clips
+            final_clips = []
+            current_time = 0
+            
+            for i, clip in enumerate(clips):
                 if i == 0:
-                    # First clip - add fade in
+                    # First clip - just add fade in if available
                     if hasattr(clip, 'fadein'):
                         clip_with_fade = clip.fadein(0.5)
-                        final_clips.append(clip_with_fade)
+                        final_clips.append(clip_with_fade.with_start(current_time))
                     else:
-                        # No fade capability, use as-is
-                        final_clips.append(clip)
-                elif i == len(clips) - 1:
-                    # Last clip - add fade out
-                    if hasattr(clip, 'fadeout'):
-                        clip_with_fade = clip.fadeout(0.5)
-                        final_clips.append(clip_with_fade)
-                    else:
-                        # No fade capability, use as-is
-                        final_clips.append(clip)
+                        final_clips.append(clip.with_start(current_time))
+                    current_time += clip.duration - transition_duration
                 else:
-                    # Middle clips - no special effects
-                    final_clips.append(clip)
-            except Exception as e:
-                # If any transition fails, just use the original clip
-                st.warning(f"Transition effect failed for clip {i+1}, using original clip")
-                final_clips.append(clip)
-        
-        return final_clips
+                    # Subsequent clips - add with overlap for cross-dissolve effect
+                    if hasattr(clip, 'fadein') and hasattr(clips[i-1], 'fadeout'):
+                        # Add fade in to current clip
+                        clip_with_fade = clip.fadein(transition_duration)
+                        final_clips.append(clip_with_fade.with_start(current_time))
+                        
+                        # Add fade out to previous clip (modify the last added clip)
+                        if len(final_clips) >= 2:
+                            prev_clip = final_clips[-2]
+                            prev_clip_faded = prev_clip.fadeout(transition_duration)
+                            final_clips[-2] = prev_clip_faded
+                    else:
+                        final_clips.append(clip.with_start(current_time))
+                    
+                    if i < len(clips) - 1:  # Not the last clip
+                        current_time += clip.duration - transition_duration
+                    else:  # Last clip
+                        if hasattr(clip, 'fadeout'):
+                            clip_with_fade = final_clips[-1].fadeout(0.5)
+                            final_clips[-1] = clip_with_fade
+            
+            # Compose all clips together
+            final_video = CompositeVideoClip(final_clips)
+            return final_video
+            
+        except Exception as e:
+            st.warning(f"Transition effects failed: {str(e)}. Using simple concatenation.")
+            # Fallback to simple concatenation
+            return concatenate_videoclips(clips)
 
 def main():
     st.set_page_config(page_title="Document to Video Generator", layout="wide")
@@ -524,76 +629,116 @@ def main():
         if st.session_state.matches:
             st.subheader("4. Generate Video")
             
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 expand_text = st.checkbox("Expand text for detailed explanation", value=True)
-                add_transitions = st.checkbox("Add transition effects", value=True)
+                add_transitions = st.checkbox("Add cross-dissolve transitions", value=True)
             
             with col2:
                 voice_lang = st.selectbox("Voice Language", ['en', 'es', 'fr', 'de', 'it'], index=0)
+                animation_type = st.selectbox("Animation Type", ['zoom', 'pan', 'fade', 'none'], index=0)
+            
+            with col3:
+                if add_transitions:
+                    transition_duration = st.slider("Transition Duration (seconds)", 0.5, 3.0, 1.0, 0.5)
+                else:
+                    transition_duration = 0.0
             
             if st.button("🎬 Generate Video", type="primary"):
-                with st.spinner("Generating video... This may take a few minutes."):
-                    try:
-                        # Create video generator
-                        video_gen = VideoGenerator("temp_video")
+                # More accurate step calculation
+                num_matches = len(st.session_state.matches)
+                steps_per_frame = 5  # More conservative estimate
+                final_steps = 3  # Initialization, assembly, rendering
+                total_steps = (num_matches * steps_per_frame) + final_steps
+                
+                progress_tracker = ProgressTracker(total_steps)
+                
+                try:
+                    # Create video generator
+                    video_gen = VideoGenerator("temp_video")
+                    video_gen.set_progress_tracker(progress_tracker)
+                    
+                    progress_tracker.set_progress(0.05, "Initializing video generation", "Setting up temporary files...")
+                    
+                    # Create clips for each match
+                    clips = []
+                    for i, match in enumerate(st.session_state.matches):
+                        # Update progress based on frame processing
+                        frame_progress = 0.1 + (0.7 * i / num_matches)  # Frames take 70% of total time
+                        progress_tracker.set_progress(frame_progress, f"Processing frame {i+1}", f"Frame {i+1} of {num_matches}")
                         
-                        # Create clips for each match
-                        clips = []
-                        for match in st.session_state.matches:
-                            frame_images = [images[i] for i in match['images'] if i < len(images)]
-                            frame_clip = video_gen.create_frame_clip(
-                                frame_images, 
-                                match['combined_text'], 
-                                expand_text
-                            )
-                            clips.append(frame_clip)
-                        
-                        # Add transitions if requested
-                        if add_transitions and len(clips) > 1:
-                            clips = video_gen.add_transition_effects(clips)
-                        
-                        # Concatenate all clips
+                        frame_images = [images[j] for j in match['images'] if j < len(images)]
+                        frame_clip = video_gen.create_frame_clip(
+                            frame_images, 
+                            match['combined_text'], 
+                            expand_text,
+                            animation_type if animation_type != 'none' else 'zoom'
+                        )
+                        clips.append(frame_clip)
+                    
+                    progress_tracker.set_progress(0.85, "Assembling video", "Combining all frames...")
+                    
+                    # Add transitions or concatenate clips
+                    if add_transitions and len(clips) > 1:
+                        final_video = video_gen.add_cross_dissolve_transitions(clips, transition_duration)
+                    else:
                         final_video = concatenate_videoclips(clips)
-                        
-                        # Save video - MoviePy 2.2.1 compatible
-                        output_path = "generated_video.mp4"
-                        final_video.write_videofile(
-                            output_path,
-                            fps=24,
-                            codec='libx264',
-                            audio_codec='aac',
-                            #verbose=False,
-                            logger='bar'
-                        )
-                        
-                        st.success("🎉 Video generated successfully!")
-                        
-                        # Provide download link
-                        with open(output_path, 'rb') as f:
-                            video_bytes = f.read()
-                        
-                        st.download_button(
-                            label="📥 Download Video",
-                            data=video_bytes,
-                            file_name=f"video_{st.session_state.extracted_content['filename']}.mp4",
-                            mime="video/mp4"
-                        )
-                        
-                        # Display video preview
-                        st.video(output_path)
-                        
-                        # Clean up clips to free memory
-                        for clip in clips:
+                    
+                    progress_tracker.set_progress(0.95, "Rendering video", "Encoding final video file...")
+                    
+                    # Save video - MoviePy 2.2.1 compatible
+                    output_path = "generated_video.mp4"
+                    final_video.write_videofile(
+                        output_path,
+                        fps=24,
+                        codec='libx264',
+                        audio_codec='aac',
+                        logger='bar'
+                    )
+                    
+                    progress_tracker.complete()
+                    
+                    st.success("🎉 Video generated successfully!")
+                    
+                    # Provide download link
+                    with open(output_path, 'rb') as f:
+                        video_bytes = f.read()
+                    
+                    st.download_button(
+                        label="📥 Download Video",
+                        data=video_bytes,
+                        file_name=f"video_{st.session_state.extracted_content['filename']}.mp4",
+                        mime="video/mp4"
+                    )
+                    
+                    # Display video preview
+                    st.video(output_path)
+                    
+                    # Clean up clips to free memory
+                    for clip in clips:
+                        if hasattr(clip, 'close'):
                             clip.close()
+                    if hasattr(final_video, 'close'):
                         final_video.close()
+                    
+                    # Clean up temporary files
+                    temp_files = list(Path("temp_video").glob("*"))
+                    for temp_file in temp_files:
+                        try:
+                            temp_file.unlink()
+                        except:
+                            pass
                         
-                    except Exception as e:
-                        st.error(f"Error generating video: {str(e)}")
-                        st.error("Try disabling transition effects if the error persists.")
-    
-
+                except Exception as e:
+                    st.error(f"Error generating video: {str(e)}")
+                    st.error("Common issues:")
+                    st.markdown("""
+                    - **Font issues**: Try disabling text overlays
+                    - **Animation issues**: Set animation to 'none'
+                    - **Transition issues**: Disable transitions
+                    - **Memory issues**: Reduce number of frames or image quality
+                    """)
 
 if __name__ == "__main__":
     main()
