@@ -8,6 +8,7 @@ import base64
 from io import BytesIO
 import json
 import time
+import textwrap
 
 # Document processing imports
 try:
@@ -262,18 +263,18 @@ class VideoGenerator:
             # Try common system fonts in order of preference
             fonts_to_try = ['Arial', 'DejaVu-Sans', 'Liberation-Sans']
             font_used = None
-            
+            wrapped_text = textwrap.fill(text, width=70)  # Wrap text to approx. 70 chars per line
             for font in fonts_to_try:
                 try:
                     txt_clip = TextClip(
-                        text=text,
-                        font_size=60,
+                        text=wrapped_text,
+                        font_size=40,
                         color='white', 
                         font=font,
                         stroke_color='black',
                         stroke_width=2,
                         method='caption',
-                        size=(1600, 400)
+                        size=(1600, None)  # Width defined; height auto-adjusted
                     ).with_duration(duration)
                     font_used = font
                     break
@@ -283,20 +284,20 @@ class VideoGenerator:
             # If no specific font works, use default
             if font_used is None:
                 txt_clip = TextClip(
-                    text=text,
-                    font_size=60,
+                    text=wrapped_text,
+                    font_size=40,
                     color='white',
                     stroke_color='black',
                     stroke_width=2,
                     method='caption',
-                    size=(1600, 400)
+                    size=(1600, None)
                 ).with_duration(duration)
                 
         except Exception as e:
             # Fallback to simplest TextClip creation
             txt_clip = TextClip(
-                text=text,
-                font_size=50,
+                text=wrapped_text,
+                font_size=30,
                 color='white'
             ).with_duration(duration)
         
@@ -429,13 +430,25 @@ class VideoGenerator:
             clips.append(bg_clip)
         
         # Add semi-transparent overlay for better text visibility
-        overlay = ColorClip(size=(1920, 300), color=(0, 0, 0))
-        overlay = overlay.with_opacity(0.7).with_duration(duration).with_position(('center', 'bottom'))
-        clips.append(overlay)
+        #overlay = ColorClip(size=(1920, 100), color=(0, 0, 0))
+        #overlay = overlay.with_opacity(0.7).with_duration(duration).with_position(('center', 'bottom'))
+        #clips.append(overlay)
         
         # Add text at bottom with better positioning
         text_clip = self.create_text_clip(text, duration)
-        text_clip = text_clip.with_position(('center', 900))
+        text_width = text_clip.w
+        text_height = text_clip.h
+        screen_width = 1920
+        screen_height = 1080
+
+        y_position = screen_height - text_height - 20  # 20px padding from bottom
+
+        # Scrolling left to right
+        def marquee_position(t):
+            x = screen_width - (t * (screen_width + text_width) / duration)
+            return (x, y_position)
+
+        text_clip = text_clip.with_position(marquee_position)
         clips.append(text_clip)
         
         # Compose final clip
