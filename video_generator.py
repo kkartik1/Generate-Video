@@ -22,12 +22,76 @@ except ImportError as e:
 
 # Video generation imports
 try:
+    # MoviePy 2.2.1 compatible imports
     from moviepy import VideoFileClip, AudioFileClip, ImageClip, TextClip, ColorClip, CompositeVideoClip, concatenate_videoclips
     import cv2
     import numpy as np
     from gtts import gTTS  # Google Text-to-Speech
+    
+    # Test MoviePy installation
+    test_clip = ColorClip(size=(100, 100), color=(0, 0, 0), duration=0.1)
+    test_clip.close()
+    
 except ImportError as e:
     st.error(f"Missing video processing library: {e}")
+    st.markdown("""
+    ### 🔧 Installation Instructions
+    
+    For MoviePy 2.2.1 compatibility:
+    
+    **Recommended installation:**
+    ```bash
+    pip install "moviepy==2.2.1"
+    pip install imageio-ffmpeg
+    ```
+    
+    **Alternative methods:**
+    ```bash
+    # Method 1 - With conda
+    conda install -c conda-forge moviepy
+    
+    # Method 2 - Latest version
+    pip install moviepy
+    ```
+    
+    After installation, restart your Python environment/kernel.
+    """)
+    st.stop()
+except Exception as e:
+    st.error(f"MoviePy installation issue: {e}")
+    st.markdown("""
+    ### Additional Requirements
+    
+    MoviePy also requires:
+    - **FFmpeg** (for video processing)
+    - **ImageIO** (for image handling)
+    
+    **To install FFmpeg:**
+    
+    **Windows:**
+    ```bash
+    # Using chocolatey
+    choco install ffmpeg
+    
+    # Or download from https://ffmpeg.org/download.html
+    ```
+    
+    **macOS:**
+    ```bash
+    brew install ffmpeg
+    ```
+    
+    **Linux (Ubuntu/Debian):**
+    ```bash
+    sudo apt update
+    sudo apt install ffmpeg
+    ```
+    
+    **Alternative: Install imageio-ffmpeg**
+    ```bash
+    pip install imageio-ffmpeg
+    ```
+    """)
     st.stop()
 
 class DocumentProcessor:
@@ -150,61 +214,92 @@ class VideoGenerator:
     def create_text_clip(self, text: str, duration: float, size: Tuple[int, int] = (1920, 1080)) -> TextClip:
         """Create animated text clip with word-by-word reveal"""
         words = text.split()
-        word_duration = duration / len(words) if words else duration
         
-        # Create base text clip - MoviePy 2.2.1 syntax with system-available font
+        # Create base text clip with better visibility - MoviePy 2.2.1 compatible
         try:
             # Try common system fonts in order of preference
-            fonts_to_try = ['Arial', 'DejaVu-Sans-Bold', 'Liberation-Sans-Bold', 'sans-serif']
+            fonts_to_try = ['Arial', 'DejaVu-Sans', 'Liberation-Sans']
             font_used = None
             
             for font in fonts_to_try:
                 try:
                     txt_clip = TextClip(
-                        text=text, 
-                        font_size=50, 
+                        text=text,  # Use 'txt' parameter explicitly
+                        font_size=60,  # Changed from 'fontsize' to 'font_size'
                         color='white', 
                         font=font,
-                        size=size,
-                        method='caption'
-                    )
+                        stroke_color='black',
+                        stroke_width=2,
+                        method='caption',
+                        size=(1600, 400)
+                    ).with_duration(duration)  # Use with_duration for 2.2.1
                     font_used = font
                     break
                 except:
                     continue
             
-            # If no specific font works, use default (no font parameter)
+            # If no specific font works, use default
             if font_used is None:
                 txt_clip = TextClip(
-                    text=text, 
-                    font_size=50, 
+                    text=text,  # Use 'txt' parameter explicitly
+                    font_size=60,  # Changed from 'fontsize' to 'font_size'
                     color='white',
-                    size=size,
-                    method='caption'
-                )
+                    stroke_color='black',
+                    stroke_width=2,
+                    method='caption',
+                    size=(1600, 400)
+                ).with_duration(duration)  # Use with_duration for 2.2.1
+                
         except Exception as e:
             # Fallback to simplest TextClip creation
             txt_clip = TextClip(
-                text=text, 
-                font_size=40, 
+                text=text,  # Use 'txt' parameter explicitly
+                font_size=50,  # Changed from 'fontsize' to 'font_size'
                 color='white'
-            )
+            ).with_duration(duration)  # Use with_duration for 2.2.1
         
-        # Set duration without fadeout effect
-        txt_clip = txt_clip.with_duration(duration)
         return txt_clip
     
     def create_image_clip(self, image: Image.Image, duration: float, size: Tuple[int, int] = (1920, 1080)) -> ImageClip:
-        """Create image clip with animations"""
+        """Create full-screen image clip with animations"""
         # Save image temporarily
         temp_path = self.output_dir / f"temp_img_{id(image)}.png"
-        image.resize(size, Image.LANCZOS).save(temp_path)
         
-        # Create image clip - MoviePy 2.2.1 syntax
+        # Resize image to full screen while maintaining aspect ratio
+        img_ratio = image.width / image.height
+        screen_ratio = size[0] / size[1]
+        
+        if img_ratio > screen_ratio:
+            # Image is wider - fit to height
+            new_height = size[1]
+            new_width = int(new_height * img_ratio)
+        else:
+            # Image is taller - fit to width
+            new_width = size[0]
+            new_height = int(new_width / img_ratio)
+        
+        # Resize and center crop to full screen
+        resized_img = image.resize((new_width, new_height), Image.LANCZOS)
+        
+        # Create full screen image by center cropping
+        left = (new_width - size[0]) // 2
+        top = (new_height - size[1]) // 2
+        right = left + size[0]
+        bottom = top + size[1]
+        
+        if left < 0 or top < 0:
+            # If image is smaller than screen, create background and paste
+            full_img = Image.new('RGB', size, (0, 0, 0))
+            paste_x = (size[0] - new_width) // 2
+            paste_y = (size[1] - new_height) // 2
+            full_img.paste(resized_img, (paste_x, paste_y))
+        else:
+            full_img = resized_img.crop((left, top, right, bottom))
+        
+        full_img.save(temp_path)
+        
+        # Create image clip - MoviePy 2.2.1 compatible
         img_clip = ImageClip(str(temp_path)).with_duration(duration)
-        
-        # Simple resize without complex effects for now
-        img_clip = img_clip.resized(0.8)  # Slightly smaller than full size
         
         return img_clip
     
@@ -227,43 +322,72 @@ class VideoGenerator:
         
         clips = []
         
-        # Create background - MoviePy 2.2.1 syntax
-        bg_clip = ColorClip(size=(1920, 1080), color=(30, 30, 30)).with_duration(duration)
-        clips.append(bg_clip)
-        
-        # Add images
+        # Add images as full-screen background
         if images:
-            img_height = 600
-            img_y = 50
-            for i, img in enumerate(images[:3]):  # Limit to 3 images per frame
-                img_clip = self.create_image_clip(img, duration, (500, img_height))
-                img_clip = img_clip.with_position((50 + i * 520, img_y))
-                clips.append(img_clip)
+            # Use first image as main background
+            main_img_clip = self.create_image_clip(images[0], duration)
+            clips.append(main_img_clip)
+            
+            # If multiple images, create a slideshow effect within the frame
+            if len(images) > 1:
+                img_duration = duration / len(images)
+                for i, img in enumerate(images):
+                    img_clip = self.create_image_clip(img, img_duration)
+                    img_clip = img_clip.with_start(i * img_duration)  # Use with_start for 2.2.1
+                    clips.append(img_clip)
+        else:
+            # Create dark background if no images
+            bg_clip = ColorClip(size=(1920, 1080), color=(20, 20, 20)).with_duration(duration)
+            clips.append(bg_clip)
         
-        # Add text
+        # Add semi-transparent overlay for better text visibility
+        overlay = ColorClip(size=(1920, 300), color=(0, 0, 0))
+        overlay = overlay.with_opacity(0.7).with_duration(duration).with_position(('center', 'bottom'))
+        clips.append(overlay)
+        
+        # Add text at bottom with better positioning
         text_clip = self.create_text_clip(text, duration)
-        text_clip = text_clip.with_position(('center', 700))
+        text_clip = text_clip.with_position(('center', 900))  # Use with_position for 2.2.1
         clips.append(text_clip)
         
-        # Compose final clip - MoviePy 2.2.1 syntax
-        final_clip = CompositeVideoClip(clips).with_audio(audio_clip)
+        # Compose final clip
+        final_clip = CompositeVideoClip(clips)
+        final_clip = final_clip.with_audio(audio_clip)  # Use with_audio for 2.2.1
+        
         return final_clip
     
     def add_transition_effects(self, clips: List[CompositeVideoClip]) -> List[CompositeVideoClip]:
-        """Add transition effects between clips"""
+        """Add transition effects between clips - MoviePy 2.2.1 compatible"""
         if len(clips) <= 1:
             return clips
         
-        # Simple transitions without complex effects
-        transition_duration = 0.5
+        # Simple transition effects that work with MoviePy 2.2.1
         final_clips = []
         
         for i, clip in enumerate(clips):
-            if i == 0:
-                # First clip - no transition needed
-                final_clips.append(clip)
-            else:
-                # Add a small gap between clips for smooth transition
+            try:
+                if i == 0:
+                    # First clip - add fade in
+                    if hasattr(clip, 'fadein'):
+                        clip_with_fade = clip.fadein(0.5)
+                        final_clips.append(clip_with_fade)
+                    else:
+                        # No fade capability, use as-is
+                        final_clips.append(clip)
+                elif i == len(clips) - 1:
+                    # Last clip - add fade out
+                    if hasattr(clip, 'fadeout'):
+                        clip_with_fade = clip.fadeout(0.5)
+                        final_clips.append(clip_with_fade)
+                    else:
+                        # No fade capability, use as-is
+                        final_clips.append(clip)
+                else:
+                    # Middle clips - no special effects
+                    final_clips.append(clip)
+            except Exception as e:
+                # If any transition fails, just use the original clip
+                st.warning(f"Transition effect failed for clip {i+1}, using original clip")
                 final_clips.append(clip)
         
         return final_clips
@@ -271,7 +395,7 @@ class VideoGenerator:
 def main():
     st.set_page_config(page_title="Document to Video Generator", layout="wide")
     
-    st.title("📄➡️🎥 Document to Video Generator")
+    st.header("Document to Video Generator")
     st.markdown("Upload documents and create engaging videos with animations and voiceovers!")
     
     # Initialize session state
@@ -281,7 +405,7 @@ def main():
         st.session_state.matches = []
     
     # File upload section
-    st.header("1. Upload Document")
+    st.subheader("1. Upload Document")
     uploaded_file = st.file_uploader(
         "Choose a document file",
         type=['pdf', 'doc', 'docx', 'ppt', 'pptx'],
@@ -322,26 +446,26 @@ def main():
     
     # Content preview and matching section
     if st.session_state.extracted_content:
-        st.header("2. Preview Extracted Content")
+        st.subheader("2. Preview Extracted Content")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📝 Text Segments")
+            st.markdown("📝 Text Segments")
             texts = st.session_state.extracted_content['texts']
             for i, text in enumerate(texts):
                 with st.expander(f"Text {i+1}"):
                     st.write(text[:200] + "..." if len(text) > 200 else text)
         
         with col2:
-            st.subheader("🖼️ Images")
+            st.markdown("🖼️ Images")
             images = st.session_state.extracted_content['images']
             for i, img in enumerate(images):
                 with st.expander(f"Image {i+1}"):
                     st.image(img, width=300)
         
         # Matching interface
-        st.header("3. Match Images with Text")
+        st.subheader("3. Match Images with Text")
         
         with st.form("matching_form"):
             st.write("Create combinations of images and text for video frames:")
@@ -378,7 +502,7 @@ def main():
         
         # Display current matches
         if st.session_state.matches:
-            st.subheader("Current Matches")
+            st.markdown("Current Matches")
             for i, match in enumerate(st.session_state.matches):
                 with st.expander(f"Frame {i+1}"):
                     col1, col2 = st.columns(2)
@@ -394,11 +518,11 @@ def main():
                     
                     if st.button(f"Remove Frame {i+1}", key=f"remove_{i}"):
                         st.session_state.matches.pop(i)
-                        st.experimental_rerun()
+                        st.rerun()
         
         # Video generation section
         if st.session_state.matches:
-            st.header("4. Generate Video")
+            st.subheader("4. Generate Video")
             
             col1, col2 = st.columns(2)
             
@@ -433,13 +557,15 @@ def main():
                         # Concatenate all clips
                         final_video = concatenate_videoclips(clips)
                         
-                        # Save video - MoviePy 2.2.1 syntax
+                        # Save video - MoviePy 2.2.1 compatible
                         output_path = "generated_video.mp4"
                         final_video.write_videofile(
                             output_path,
                             fps=24,
                             codec='libx264',
-                            audio_codec='aac'
+                            audio_codec='aac',
+                            #verbose=False,
+                            logger='bar'
                         )
                         
                         st.success("🎉 Video generated successfully!")
@@ -458,44 +584,16 @@ def main():
                         # Display video preview
                         st.video(output_path)
                         
+                        # Clean up clips to free memory
+                        for clip in clips:
+                            clip.close()
+                        final_video.close()
+                        
                     except Exception as e:
                         st.error(f"Error generating video: {str(e)}")
+                        st.error("Try disabling transition effects if the error persists.")
     
-    # Instructions
-    with st.sidebar:
-        st.header("📋 Instructions")
-        st.markdown("""
-        1. **Upload** a supported document (PDF, DOC, DOCX, PPT, PPTX)
-        2. **Preview** extracted text and images
-        3. **Match** images with relevant text segments
-        4. **Generate** video with animations and voiceover
-        
-        **Features:**
-        - Automatic text and image extraction
-        - Flexible many-to-many matching
-        - Word-by-word text animation
-        - AI-powered text expansion
-        - Professional transitions
-        - Multi-language voiceover
-        """)
-        
-        st.header("🔧 Requirements")
-        st.markdown("""
-        ```bash
-        pip install streamlit
-        pip install "moviepy==2.2.1"
-        pip install PyMuPDF
-        pip install python-docx
-        pip install python-pptx
-        pip install mammoth
-        pip install Pillow
-        pip install gtts
-        pip install opencv-python
-        pip install pytesseract
-        ```
-        """)
-        
-        st.warning("⚠️ Make sure to install MoviePy version 2.2.1 specifically for compatibility.")
+
 
 if __name__ == "__main__":
     main()
