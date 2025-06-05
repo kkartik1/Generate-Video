@@ -11,6 +11,7 @@ import time
 import textwrap
 import llm_response as llm
 import re
+import pandas as pd
 
 # Document processing imports
 try:
@@ -363,7 +364,7 @@ class VideoGenerator:
                     clips.append(img_clip)
         else:
             # Create animated dark background if no images
-            bg_clip = ColorClip(size=(1920, 1080), color=(20, 20, 40)).with_duration(duration)
+            bg_clip = ColorClip(size=(1600, 800), color=(20, 20, 40)).with_duration(duration)
             clips.append(bg_clip)
         
         # Add semi-transparent overlay for better text visibility
@@ -375,8 +376,8 @@ class VideoGenerator:
         text_clip = self.create_text_clip(text, duration)
         text_width = text_clip.w
         text_height = text_clip.h
-        screen_width = 1920
-        screen_height = 1080
+        screen_width = 1600
+        screen_height = 800
 
         y_position = screen_height - text_height - 20  # 20px padding from bottom
 
@@ -442,6 +443,24 @@ class VideoGenerator:
             # Fallback to simple concatenation
             return concatenate_videoclips(clips)
 
+# Function to split rows without breaking words
+def split_rows(df, length=150):
+    new_rows = []
+    for _, row in df.iterrows():
+        combined_text = row['combined_text']
+        while len(combined_text) > length:
+            split_index = combined_text[:length].rfind(' ')
+            if split_index == -1:
+                split_index = length
+            new_row = row.copy()
+            new_row['combined_text'] = combined_text[:split_index]
+            new_rows.append(new_row)
+            combined_text = combined_text[split_index:].lstrip()
+        new_row = row.copy()
+        new_row['combined_text'] = combined_text
+        new_rows.append(new_row)
+    return pd.DataFrame(new_rows)        
+        
 def main():
     st.set_page_config(page_title="Document to Video Generator", layout="wide")
     
@@ -493,6 +512,7 @@ def main():
                 texts = [re.sub(r'[\n\r]', ' ', step) for step in texts]
                 texts = [re.sub(r'[^a-zA-Z0-9 .,!?;:\'\-"]', '', step) for step in texts]
                 texts = [re.sub(r'\s+', ' ', step) for step in texts]
+                texts = [step.replace("Narrator", "") for step in texts]
                 texts = [step.strip() for step in texts if step.strip()]
 
                 st.session_state.extracted_content = {
@@ -564,7 +584,9 @@ def main():
                             'texts': selected_texts,
                             'combined_text': ' '.join([texts[i] for i in selected_texts])
                         }
-                        st.session_state.matches.append(match)
+                        df = pd.DataFrame(match)
+                        match_df = split_rows(df)
+                        st.session_state.matches.append(match_df)
                         st.success("Match added!")
         
         # Display current matches
@@ -596,6 +618,7 @@ def main():
             if st.button("🎬 Generate Video", type="primary"):
                 # More accurate step calculation
                 num_matches = len(st.session_state.matches)
+                print(num_matches)
                 steps_per_frame = 5  # More conservative estimate
                 final_steps = 3  # Initialization, assembly, rendering
                 total_steps = (num_matches * steps_per_frame) + final_steps
