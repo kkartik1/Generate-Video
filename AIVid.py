@@ -367,11 +367,6 @@ class VideoGenerator:
             bg_clip = ColorClip(size=(1600, 800), color=(20, 20, 40)).with_duration(duration)
             clips.append(bg_clip)
         
-        # Add semi-transparent overlay for better text visibility
-        #overlay = ColorClip(size=(1920, 100), color=(0, 0, 0))
-        #overlay = overlay.with_opacity(0.7).with_duration(duration).with_position(('center', 'bottom'))
-        #clips.append(overlay)
-        
         # Add text at bottom with better positioning
         text_clip = self.create_text_clip(text, duration)
         text_width = text_clip.w
@@ -381,7 +376,7 @@ class VideoGenerator:
 
         y_position = screen_height - text_height - 20  # 20px padding from bottom
 
-        text_clip = text_clip.with_position(('center',y_position))
+        text_clip = text_clip.with_position(('center', y_position))
         clips.append(text_clip)
         
         # Compose final clip
@@ -390,8 +385,8 @@ class VideoGenerator:
         
         return final_clip
     
-    def add_cross_dissolve_transitions(self, clips: List[CompositeVideoClip], transition_duration: float = 10.0) -> CompositeVideoClip:
-        """Add cross-dissolve transitions between clips using overlap"""
+    def add_cross_dissolve_transitions(self, clips: List[CompositeVideoClip], transition_duration: float = 1.0) -> CompositeVideoClip:
+        """Add cross-dissolve transitions between clips with proper audio handling - FIXED VERSION"""
         if len(clips) <= 1:
             return clips[0] if clips else None
         
@@ -399,67 +394,136 @@ class VideoGenerator:
             self.progress_tracker.update("Adding transitions", f"Transition duration: {transition_duration}s")
         
         try:
-            # Calculate total duration and positions for overlapping clips
+            # Reduce transition duration if it's too long compared to clip durations
+            min_clip_duration = min(clip.duration for clip in clips)
+            max_transition = min_clip_duration / 3  # More conservative to avoid audio overlap
+            effective_transition = min(transition_duration, max_transition)
+            
+            # Create list to hold all clips with proper timing
             final_clips = []
-            current_time = 0
+            current_start_time = 0
             
             for i, clip in enumerate(clips):
                 if i == 0:
-                    # First clip - just add fade in if available
-                    if hasattr(clip, 'fadein'):
-                        clip_with_fade = clip.fadein(0.5)
-                        final_clips.append(clip_with_fade.with_start(current_time + 2.0))
-                    else:
-                        final_clips.append(clip.with_start(current_time))
-                    current_time += clip.duration - transition_duration
-                else:
-                    # Subsequent clips - add with overlap for cross-dissolve effect
-                    if hasattr(clip, 'fadein') and hasattr(clips[i-1], 'fadeout'):
-                        # Add fade in to current clip
-                        clip_with_fade = clip.fadein(transition_duration)
-                        final_clips.append(clip_with_fade.with_start(current_time + 2.0))
-                        
-                        # Add fade out to previous clip (modify the last added clip)
-                        if len(final_clips) >= 2:
-                            prev_clip = final_clips[-2]
-                            prev_clip_faded = prev_clip.fadeout(transition_duration)
-                            final_clips[-2] = prev_clip_faded
-                    else:
-                        final_clips.append(clip.with_start(current_time))
+                    # First clip starts at time 0
+                    clip_with_timing = clip.with_start(current_start_time)
                     
-                    if i < len(clips) - 1:  # Not the last clip
-                        current_time += clip.duration - transition_duration
-                    else:  # Last clip
-                        if hasattr(clip, 'fadeout'):
-                            clip_with_fade = final_clips[-1].fadeout(0.5)
-                            final_clips[-1] = clip_with_fade
+                    # Add fade in effect to video only, keep audio as is
+                    if hasattr(clip_with_timing, 'fadein'):
+                        # Create separate video and audio components
+                        video_part = clip_with_timing.without_audio().fadein(0.5)
+                        audio_part = clip_with_timing.audio
+                        # Recombine with original audio timing
+                        clip_with_timing = video_part.with_audio(audio_part)
+                    
+                    final_clips.append(clip_with_timing)
+                    
+                    # Next clip starts after this one, minus transition duration
+                    # But audio should not overlap, so we calculate differently
+                    current_start_time += clip.duration - effective_transition
+                    
+                else:
+                    # For subsequent clips, handle video and audio separately
+                    original_audio = clip.audio
+                    original_video = clip.without_audio()
+                    
+                    # Video part starts with overlap for visual transition
+                    video_part = original_video.with_start(current_start_time)
+                    if hasattr(video_part, 'fadein'):
+                        video_part = video_part.fadein(effective_transition)
+                    
+                    # Audio part starts AFTER the previous audio ends (no overlap)
+                    # Calculate when previous audio actually ends
+                    prev_clip_audio_end = final_clips[-1].audio.end if hasattr(final_clips[-1], 'audio') and final_clips[-1].audio else current_start_time
+                    audio_start_time = max(current_start_time, prev_clip_audio_end)
+                    
+                    # Ensure audio doesn't start before its video
+                    audio_start_time = max(audio_start_time, current_start_time)
+                    
+                    audio_part = original_audio.with_start(audio_start_time)
+                    
+                    # Add fade out to previous clip's video only
+                    if len(final_clips) > 0:
+                        prev_clip = final_clips[-1]
+                        if hasattr(prev_clip, 'fadeout'):
+                            # Separate video and audio of previous clip
+                            prev_video = prev_clip.without_audio()
+                            prev_audio = prev_clip.audio
+                            
+                            # Apply fadeout only to video
+                            prev_video_faded = prev_video.fadeout(effective_transition)
+                            
+                            # Recombine with original audio (no fade on audio)
+                            final_clips[-1] = prev_video_faded.with_audio(prev_audio)
+                    
+                    # Combine video and audio for current clip
+                    current_clip = CompositeVideoClip([video_part]).with_audio(audio_part)
+                    final_clips.append(current_clip)
+                    
+                    # Calculate start time for next clip
+                    if i < len(clips) - 1:
+                        current_start_time += clip.duration - effective_transition
+            
+            # Add fade out to last clip's video only
+            if len(final_clips) > 0:
+                last_clip = final_clips[-1]
+                if hasattr(last_clip, 'fadeout'):
+                    last_video = last_clip.without_audio()
+                    last_audio = last_clip.audio
+                    last_video_faded = last_video.fadeout(0.5)
+                    final_clips[-1] = last_video_faded.with_audio(last_audio)
             
             # Compose all clips together
             final_video = CompositeVideoClip(final_clips)
             return final_video
             
         except Exception as e:
+            st.warning(f"Advanced transition effects failed: {str(e)}. Using simple concatenation.")
+            # Fallback to simple concatenation which naturally avoids audio overlap
+            return concatenate_videoclips(clips)
+                
+        except Exception as e:
             st.warning(f"Transition effects failed: {str(e)}. Using simple concatenation.")
             # Fallback to simple concatenation
             return concatenate_videoclips(clips)
 
-# Function to split rows without breaking words
-def split_rows(df, length=150):
-    new_rows = []
-    for _, row in df.iterrows():
-        combined_text = row['combined_text']
-        while len(combined_text) > length:
-            split_index = combined_text[:length].rfind(' ')
-            if split_index == -1:
+# Function to split rows without breaking words - FIXED VERSION
+def split_rows(matches_list, length=150):
+    """Split text content into smaller chunks for better video pacing"""
+    new_matches = []
+    
+    for match in matches_list:
+        combined_text = match.get('combined_text', '')
+        
+        # If text is short enough, keep as is
+        if len(combined_text) <= length:
+            new_matches.append(match)
+            continue
+        
+        # Split long text into chunks
+        text_chunks = []
+        remaining_text = combined_text
+        
+        while len(remaining_text) > length:
+            # Find the last space within the length limit
+            split_index = remaining_text[:length].rfind(' ')
+            if split_index == -1:  # No space found, split at length
                 split_index = length
-            new_row = row.copy()
-            new_row['combined_text'] = combined_text[:split_index]
-            new_rows.append(new_row)
-            combined_text = combined_text[split_index:].lstrip()
-        new_row = row.copy()
-        new_row['combined_text'] = combined_text
-        new_rows.append(new_row)
-    return pd.DataFrame(new_rows)        
+            
+            text_chunks.append(remaining_text[:split_index].strip())
+            remaining_text = remaining_text[split_index:].strip()
+        
+        # Add remaining text
+        if remaining_text:
+            text_chunks.append(remaining_text)
+        
+        # Create new matches for each text chunk
+        for chunk in text_chunks:
+            new_match = match.copy()
+            new_match['combined_text'] = chunk
+            new_matches.append(new_match)
+    
+    return new_matches
         
 def main():
     st.set_page_config(page_title="Document to Video Generator", layout="wide")
@@ -507,6 +571,8 @@ def main():
                 
                 # Split the tutorial text into steps
                 texts = text_summ.split("Step")
+                if len(texts) == 1:
+                    texts = texts.splitlines()
                 
                 # Remove empty strings and strip leading/trailing whitespace
                 texts = [re.sub(r'[\n\r]', ' ', step) for step in texts]
@@ -584,9 +650,7 @@ def main():
                             'texts': selected_texts,
                             'combined_text': ' '.join([texts[i] for i in selected_texts])
                         }
-                        df = pd.DataFrame(match)
-                        match_df = split_rows(df)
-                        st.session_state.matches.append(match_df)
+                        st.session_state.matches.append(match)
                         st.success("Match added!")
         
         # Display current matches
@@ -612,14 +676,22 @@ def main():
         # Video generation section
         if st.session_state.matches:
             st.subheader("4. Generate Video")
-            add_transitions = True
-            transition_duration = 10.0
+            
+            # Video settings
+            col1, col2 = st.columns(2)
+            with col1:
+                add_transitions = st.checkbox("Add cross-dissolve transitions", value=True)
+            with col2:
+                transition_duration = st.slider("Transition duration (seconds)", 0.5, 3.0, 1.0, 0.1)
             
             if st.button("🎬 Generate Video", type="primary"):
+                # Split long text segments for better pacing
+                processed_matches = split_rows(st.session_state.matches, length=150)
+                
                 # More accurate step calculation
-                num_matches = len(st.session_state.matches)
-                print(num_matches)
-                steps_per_frame = 5  # More conservative estimate
+                num_matches = len(processed_matches)
+                print(f"Processing {num_matches} video segments")
+                steps_per_frame = 3  # Conservative estimate
                 final_steps = 3  # Initialization, assembly, rendering
                 total_steps = (num_matches * steps_per_frame) + final_steps
                 
@@ -634,7 +706,7 @@ def main():
                     
                     # Create clips for each match
                     clips = []
-                    for i, match in enumerate(st.session_state.matches):
+                    for i, match in enumerate(processed_matches):
                         # Update progress based on frame processing
                         frame_progress = 0.1 + (0.7 * i / num_matches)  # Frames take 70% of total time
                         progress_tracker.set_progress(frame_progress, f"Processing frame {i+1}", f"Frame {i+1} of {num_matches}")
